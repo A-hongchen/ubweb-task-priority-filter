@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         UBWEB 任务备注优先级
 // @namespace    https://github.com/A-hongchen/ubweb-task-priority-filter
-// @version      1.0.0
-// @description  仅读取当前用户认领任务的优先级，并按格式写入备注开头
+// @version      1.0.1
+// @description  仅读取当前用户认领任务的优先级，并校正备注开头的优先级标记
 // @author       A-hongchen
 // @license      MIT
 // @match        *://task.ubweb.best/*
@@ -273,8 +273,9 @@
         return cleanPriority(item.textContent);
     }
 
-    function hasPriorityPrefix(text) {
-        return /^【优先级：[1-6]】/.test(normalizeText(text));
+    function getPriorityPrefix(text) {
+        var match = String(text || '').match(/^(\s*)【优先级：([1-6])】/);
+        return match ? { leading: match[1], priority: match[2], text: match[0] } : null;
     }
 
     function getRemarkInput(dialog) {
@@ -284,16 +285,24 @@
         return item.querySelector('textarea') || item.querySelector('input');
     }
 
-    function writeRemark(dialog, priority) {
+    function syncRemarkPriority(dialog, priority) {
         var input = getRemarkInput(dialog);
-        if (!input) return false;
+        var existing;
 
-        if (hasPriorityPrefix(input.value)) return false;
+        if (!input) return 'failed';
 
-        input.value = '【优先级：' + priority + '】' + input.value;
+        existing = getPriorityPrefix(input.value);
+        if (existing && existing.priority === priority) return 'skipped';
+
+        if (existing) {
+            input.value = input.value.replace(/^(\s*)【优先级：[1-6]】/, '$1【优先级：' + priority + '】');
+        } else {
+            input.value = '【优先级：' + priority + '】' + input.value;
+        }
+
         input.dispatchEvent(new Event('input', { bubbles: true }));
         input.dispatchEvent(new Event('change', { bubbles: true }));
-        return true;
+        return 'updated';
     }
 
     function clickConfirm(dialog) {
@@ -321,17 +330,10 @@
                 return;
             }
 
-            var remarkInput = getRemarkInput(dialog);
-            if (remarkInput && hasPriorityPrefix(remarkInput.value)) {
-                counters.skipped += 1;
-                var alreadyCancel = findButtonByText(dialog, '取消') || dialog.querySelector('.el-dialog__headerbtn');
-                if (alreadyCancel) alreadyCancel.click();
-                setTimeout(callback, 500);
-                return;
-            }
-
             var priority = readPriority(dialog);
-            if (!priority || !writeRemark(dialog, priority)) {
+            var syncResult;
+
+            if (!priority) {
                 counters.failed += 1;
                 var cancel = findButtonByText(dialog, '取消') || dialog.querySelector('.el-dialog__headerbtn');
                 if (cancel) cancel.click();
@@ -339,7 +341,24 @@
                 return;
             }
 
-            setStatus('处理中 ' + (index + 1) + '/' + total + '：写入优先级 ' + priority);
+            syncResult = syncRemarkPriority(dialog, priority);
+            if (syncResult === 'skipped') {
+                counters.skipped += 1;
+                var alreadyCancel = findButtonByText(dialog, '取消') || dialog.querySelector('.el-dialog__headerbtn');
+                if (alreadyCancel) alreadyCancel.click();
+                setTimeout(callback, 500);
+                return;
+            }
+
+            if (syncResult !== 'updated') {
+                counters.failed += 1;
+                var failedCancel = findButtonByText(dialog, '取消') || dialog.querySelector('.el-dialog__headerbtn');
+                if (failedCancel) failedCancel.click();
+                setTimeout(callback, 500);
+                return;
+            }
+
+            setStatus('处理中 ' + (index + 1) + '/' + total + '：校正优先级 ' + priority);
             if (!clickConfirm(dialog)) {
                 counters.failed += 1;
                 callback();
@@ -381,7 +400,7 @@
             return;
         }
 
-        if (!window.confirm('仅读取“优先级”并写入“备注”开头；已存在【优先级：X】的任务会跳过。需要点击“确定”保存备注。共 ' + rows.length + ' 条，继续？')) {
+        if (!window.confirm('仅读取“优先级”并校正“备注”开头；已存在且正确的【优先级：X】会跳过，不正确会修正。需要点击“确定”保存备注。共 ' + rows.length + ' 条，继续？')) {
             return;
         }
 
